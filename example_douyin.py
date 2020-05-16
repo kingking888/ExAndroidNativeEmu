@@ -1,16 +1,22 @@
 import logging
 import posixpath
 import sys
+import os.path
 
 from unicorn import *
 from unicorn.arm_const import *
 
 from androidemu.emulator import Emulator
 import androidemu.utils.debug_utils
+from androidemu.vfs.virtual_file import VirtualFile
+from androidemu.utils import misc_utils
 from androidemu.java.helpers.native_method import native_method
 from androidemu.java.java_class_def import JavaClassDef
 from androidemu.java.java_method_def import java_method_def
 from androidemu.utils.chain_log import ChainLogger
+from androidemu.java.classes.string import String
+from androidemu.java.classes.list import List
+from androidemu.java.classes.array import Array
 
 
 class XGorgen(metaclass=JavaClassDef, jvm_name='com/ss/sys/ces/a'):
@@ -50,8 +56,8 @@ class java_lang_System(metaclass=JavaClassDef, jvm_name='java/lang/System'):
     @java_method_def(name='getProperty', args_list=["jstring"], signature='(Ljava/lang/String;)Ljava/lang/String;',
                      native=False)
     def getProperty(self, *args, **kwargs):
-        print(args[0].value)
-        return "2.1.0"
+        print(args[0])
+        return String("2.1.0")
 
 
 class java_lang_StackTraceElement(metaclass=JavaClassDef, jvm_name='java/lang/StackTraceElement'):
@@ -73,25 +79,46 @@ class java_lang_Thread(metaclass=JavaClassDef, jvm_name='java/lang/Thread'):
 
     @java_method_def(name="getStackTrace", signature='()[Ljava/lang/StackTraceElement;', native=False)
     def getStackTrace(self, *args, **kwargs):
-        return [java_lang_StackTraceElement("dalvik.system.VMStack"),
-                java_lang_StackTraceElement("java.lang.Thread"),
-                java_lang_StackTraceElement("com.ss.sys.ces.a"),
-                java_lang_StackTraceElement("com.yf.douyintool.MainActivity"),
-                java_lang_StackTraceElement("java.lang.reflect.Method"),
-                java_lang_StackTraceElement("java.lang.reflect.Method"),
-                java_lang_StackTraceElement("android.support.v7.app.AppCompatViewInflater$DeclaredOnClickListener"),
-                java_lang_StackTraceElement("android.view.View"),
-                java_lang_StackTraceElement("android.os.Handler"),
-                java_lang_StackTraceElement("android.os.Handler"),
-                java_lang_StackTraceElement("android.os.Looper"),
-                java_lang_StackTraceElement("android.app.ActivityThread"),
-                java_lang_StackTraceElement("java.lang.reflect.Method"),
-                java_lang_StackTraceElement("java.lang.reflect.Method"),
-                java_lang_StackTraceElement("com.android.internal.os.ZygoteInit$MethodAndArgsCaller"),
-                java_lang_StackTraceElement("com.android.internal.os.ZygoteInit"),
-                java_lang_StackTraceElement("dalvik.system.NativeStart")
+        l = [java_lang_StackTraceElement(String("dalvik.system.VMStack")),
+                java_lang_StackTraceElement(String("java.lang.Thread")),
+                java_lang_StackTraceElement(String("com.ss.sys.ces.a")),
+                java_lang_StackTraceElement(String("com.yf.douyintool.MainActivity")),
+                java_lang_StackTraceElement(String("java.lang.reflect.Method")),
+                java_lang_StackTraceElement(String("java.lang.reflect.Method")),
+                java_lang_StackTraceElement(String("android.support.v7.app.AppCompatViewInflater$DeclaredOnClickListener")),
+                java_lang_StackTraceElement(String("android.view.View")),
+                java_lang_StackTraceElement(String("android.os.Handler")),
+                java_lang_StackTraceElement(String("android.os.Handler")),
+                java_lang_StackTraceElement(String("android.os.Looper")),
+                java_lang_StackTraceElement(String("android.app.ActivityThread")),
+                java_lang_StackTraceElement(String("java.lang.reflect.Method")),
+                java_lang_StackTraceElement(String("java.lang.reflect.Method")),
+                java_lang_StackTraceElement(String("com.android.internal.os.ZygoteInit$MethodAndArgsCaller")),
+                java_lang_StackTraceElement(String("com.android.internal.os.ZygoteInit")),
+                java_lang_StackTraceElement(String("dalvik.system.NativeStart"))
                 ]
+            #
+        #
+        r = List(l)
+        return r
+    #
 
+def hook_mem_read(uc, access, address, size, value, user_data):
+    pc = uc.reg_read(UC_ARM_REG_PC)
+    
+    if (address == 3419067861):
+        data = uc.mem_read(address, size)
+        v = int.from_bytes(data, byteorder='little', signed=False)
+        print("read")
+    #
+#
+
+def hook_mem_write(uc, access, address, size, value, user_data):
+    pc = uc.reg_read(UC_ARM_REG_PC)
+    if (address == 3419067861):
+        print("write")
+    #
+#
 g_cfd = ChainLogger(sys.stdout, "./ins-douyin.txt")
 # Add debugging.
 def hook_code(mu, address, size, user_data):
@@ -109,12 +136,6 @@ def hook_code(mu, address, size, user_data):
     #
 #
 
-# Configure logging
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.DEBUG,
-    format="%(asctime)s %(levelname)7s %(name)34s | %(message)s"
-)
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +145,10 @@ emulator = Emulator(
     vfs_root=posixpath.join(posixpath.dirname(__file__), "vfs")
 )
 
-emulator.mu.hook_add(UC_HOOK_CODE, hook_code, emulator)
+#emulator.mu.hook_add(UC_HOOK_CODE, hook_code, emulator)
+
+emulator.mu.hook_add(UC_HOOK_MEM_WRITE, hook_mem_write)
+emulator.mu.hook_add(UC_HOOK_MEM_READ, hook_mem_read)
 # Register Java class.
 # emulator.java_classloader.add_class(MainActivity)
 emulator.java_classloader.add_class(XGorgen)
@@ -136,6 +160,8 @@ emulator.java_classloader.add_class(java_lang_StackTraceElement)
 
 # Load all libraries.
 lib_module = emulator.load_library("tests/bin/libcms.so")
+#lib_module = emulator.load_library("../deobf/tests/bin/libcms2.so")
+#lib_module = emulator.load_library("../deobf/cms.so")
 
 # Show loaded modules.
 logger.info("Loaded modules:")
@@ -150,18 +176,19 @@ try:
 
     # bypass douyin checks
     
-    with open("tests/bin/app_process32", 'rb') as ap:
-        data = ap.read()
-        len1 = len(data) + 1024 - (len(data) % 1024)
-        emulator.mu.mem_map(0xab006000, len1)
-        emulator.mu.mem_write(0xab006000, data)
+    path = "vfs/system/bin/app_process32"
+    sz = os.path.getsize(path)
+    vf = VirtualFile("/system/bin/app_process32", misc_utils.my_open(path, os.O_RDONLY), path)
+    emulator.memory.map(0xab006000, sz, UC_PROT_WRITE | UC_PROT_READ, vf, 0)
     
     x = XGorgen()
     data = 'acde74a94e6b493a3399fac83c7c08b35D58B21D9582AF77647FC9902E36AE70f9c001e9334e6e94916682224fbe4e5f00000000000000000000000000000000'
     data = bytearray(bytes.fromhex(data))
-    result = x.leviathan(emulator, 1562848170, data)
+    arr = Array("B", data)
+    result = x.leviathan(emulator, 1562848170, arr)
 
     print(''.join(['%02x' % b for b in result]))
+    
     # 037d560d0000903e34fb093f1d21e78f3bdf3fbebe00b124becc
     # 036d2a7b000010f4d05395b7df8b0ec2b5ec085b938a473a6a51
     # 036d2a7b000010f4d05395b7df8b0ec2b5ec085b938a473a6a51

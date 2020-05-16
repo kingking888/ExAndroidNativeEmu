@@ -1,6 +1,6 @@
 # ExAndroidNativeEmu
 
-This a personal improved version of [AndroidNativeEmu](https://github.com/AeonLucid/AndroidNativeEmu).
+This is a personal improved version of [AndroidNativeEmu](https://github.com/AeonLucid/AndroidNativeEmu).Allow running android elf code on pc.
 
 ## Difference between AndroidNativeEmu
  - Rewrite memory mapping module, fully support jemalloc
@@ -9,11 +9,14 @@ This a personal improved version of [AndroidNativeEmu](https://github.com/AeonLu
  - Stop all runing when getting exception  instead of just skiping one emulator runing for easily bug detecting...
  - Support ELF DT_INIT call
  - Auto Load dependency so.
+ - auto generate /proc/\[pid\]/maps according to current memory map
+ - fix R_ARM_ABS32 relocation bug.
+ - use program header to load so instead of section header
  
 ## TODO
  - Simulate linker TLS initialization.
  - Support well known virtual file like /proc/self/maps...
- - Get rid of dependency on Section Header when loading ELF.
+ - ~~Get rid of dependency on Section Header when loading ELF~~.
  
 ## Usage
 
@@ -23,7 +26,7 @@ Make sure you are using python 3.7.
 
 1. Clone the repository
 2. Run `pip install -r requirements.txt`
-3. Run `python example.py`
+3. Run `python example_jni.py`
 
 > If you have trouble getting the `keystone-engine` dependency on Windows (as I did):
 > 1. Clone their [repository](https://github.com/keystone-engine/keystone)

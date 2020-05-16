@@ -3,10 +3,10 @@ import inspect
 from unicorn import Uc
 from unicorn.arm_const import *
 
-from androidemu.hooker import STACK_OFFSET
-from androidemu.java.java_class_def import JavaClassDef
-from androidemu.java.jni_const import JNI_ERR
-from androidemu.java.jni_ref import jobject, jstring, jobjectArray, jbyteArray
+from ...hooker import STACK_OFFSET
+from ..java_class_def import JavaClassDef
+from ..jni_const import JNI_ERR
+from ..jni_ref import jobject
 
 
 def native_write_args(emu, *argv):
@@ -30,12 +30,14 @@ def native_write_args(emu, *argv):
     if amount >= 5:
         sp_start = emu.mu.reg_read(UC_ARM_REG_SP)
         sp_current = sp_start - STACK_OFFSET  # Need to offset because our hook pushes one register on the stack.
+        sp_current = sp_current - (4 * (amount - 4))  # Reserve space for arguments.
+        sp_end = sp_current
 
         for arg in argv[4:]:
-            emu.mu.mem_write(sp_current - STACK_OFFSET, native_translate_arg(emu, arg).to_bytes(4, byteorder='little'))
-            sp_current = sp_current - 4
+            emu.mu.mem_write(sp_current, native_translate_arg(emu, arg).to_bytes(4, byteorder='little'))
+            sp_current = sp_current + 4
 
-        emu.mu.reg_write(UC_ARM_REG_SP, sp_current)
+        emu.mu.reg_write(UC_ARM_REG_SP, sp_end)
 
 
 def native_read_args(mu, args_count):
@@ -66,12 +68,8 @@ def native_read_args(mu, args_count):
 def native_translate_arg(emu, val):
     if isinstance(val, int):
         return val
-    elif isinstance(val, str):
-        return emu.java_vm.jni_env.add_local_reference(jstring(val))
-    elif isinstance(val, list):
-        return emu.java_vm.jni_env.add_local_reference(jobjectArray(val))
     elif isinstance(val, bytearray):
-        return emu.java_vm.jni_env.add_local_reference(jbyteArray(val))
+        return emu.java_vm.jni_env.add_local_reference(jobject(val))
     elif isinstance(type(val), JavaClassDef):
         # TODO: Look into this, seems wrong..
         return emu.java_vm.jni_env.add_local_reference(jobject(val))
@@ -83,7 +81,7 @@ def native_translate_arg(emu, val):
 
 def native_write_arg_register(emu, reg, val):
     emu.mu.reg_write(reg, native_translate_arg(emu, val))
-#
+
 
 def native_method(func):
     def native_method_wrapper(*argv):
@@ -107,11 +105,12 @@ def native_method(func):
         if len(argv) == 1:
             result = func(mu, *native_args)
         else:
+            le = len(native_args)
             result = func(argv[0], mu, *native_args)
 
         if result is not None:
             native_write_arg_register(emu, UC_ARM_REG_R0, result)
-        else:
-            mu.reg_write(UC_ARM_REG_R0, JNI_ERR)
+        #
+    #
 
     return native_method_wrapper

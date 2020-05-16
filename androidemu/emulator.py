@@ -1,29 +1,39 @@
 import logging
 import os
 import time
+import importlib
+import inspect
+import pkgutil
+import sys
+
 from random import randint
 
 from unicorn import *
 from unicorn.arm_const import *
+from . import config
+from . import pcb
+from .cpu.interrupt_handler import InterruptHandler
+from .cpu.syscall_handlers import SyscallHandlers
+from .cpu.syscall_hooks import SyscallHooks
+from .hooker import Hooker
+from .internal.modules import Modules
+from .java.helpers.native_method import native_write_args
+from .java.java_classloader import JavaClassLoader
+from .java.java_vm import JavaVM
+from .native.hooks import NativeHooks
+from .native.memory import NativeMemory
+from .native.memory_map import MemoryMap
+from .vfs.file_system import VirtualFileSystem
 
-from androidemu import config
-from androidemu.config import HOOK_MEMORY_BASE, HOOK_MEMORY_SIZE
-from androidemu.cpu.interrupt_handler import InterruptHandler
-from androidemu.cpu.syscall_handlers import SyscallHandlers
-from androidemu.cpu.syscall_hooks import SyscallHooks
-from androidemu.hooker import Hooker
-from androidemu.internal.modules import Modules
-from androidemu.java.helpers.native_method import native_write_args
-from androidemu.java.java_classloader import JavaClassLoader
-from androidemu.java.java_vm import JavaVM
-from androidemu.native.hooks import NativeHooks
-from androidemu.native.memory import NativeMemory
-from androidemu.native.memory_map import MemoryMap
-from androidemu.tracer import Tracer
-from androidemu.vfs.file_system import VirtualFileSystem
+from .java.java_class_def import JavaClassDef
+from .java.constant_values import JAVA_NULL
+
+sys.stdout = sys.stderr
+#由于这里的stream只能改一次，为避免与fork之后的子进程写到stdout混合，将这些log写到stderr
+#FIXME:解除这种特殊的依赖
+logging.basicConfig(level=logging.DEBUG, format='%(process)d - %(asctime)s - %(levelname)s - %(message)s', stream=sys.stderr)
 
 logger = logging.getLogger(__name__)
-
 
 class Emulator:
 
@@ -61,20 +71,45 @@ class Emulator:
         #
     #
 
+    def __add_classes(self):
+        dirname = "androidemu/java/classes"
+        preload_classes = set()
+        for importer, package_name, c in pkgutil.iter_modules([dirname]):
+            full_name = "%s.%s"%(dirname.replace("/", "."), package_name)
+            m = importlib.import_module(full_name)
+            #print(dir(m))
+            clsList = inspect.getmembers(m, inspect.isclass)
+            for _, clz in clsList:
+                if (type(clz) == JavaClassDef):
+                    preload_classes.add(clz)
+                #
+            #
+        #
+        for clz in preload_classes:
+            self.java_classloader.add_class(clz)
+        #
+
+        #also add classloader as java class
+        self.java_classloader.add_class(JavaClassLoader)
+        
+    #
     """
     :type mu Uc
     :type modules Modules
     :type memory Memory
     """
-    def __init__(self, vfs_root="vfs", vfp_inst_set=False):
+    def __init__(self, vfs_root="vfs", config_path="default.json", vfp_inst_set=True):
         # Unicorn.
+        config.global_config_init(config_path)
         self.mu = Uc(UC_ARCH_ARM, UC_MODE_ARM)
         self.__vfs_root = vfs_root
 
         if vfp_inst_set:
             self._enable_vfp()
         #
+        pobj = pcb.get_pcb()
 
+        logger.info("process pid:%d"%pobj.get_pid())
         #注意，原有缺陷，libc_preinit init array中访问R1参数是从内核传过来的
         #而这里直接将0映射空间，,强行运行过去，因为R1刚好为0,否则会报memory unmap异常
         #FIXME:MRC指令总是返回0,TLS模擬
@@ -82,7 +117,7 @@ class Emulator:
         self.mu.mem_map(0x0, 0x00001000, UC_PROT_READ | UC_PROT_WRITE)
         
         # Android
-        self.system_properties = {"libc.debug.malloc.options": ""}
+        self.system_properties = {"libc.debug.malloc.options": "", "ro.build.version.sdk":"19", "persist.sys.dalvik.vm.lib":"libdvm.so", "ro.product.cpu.abi":"armeabi-v7a"}
         self.memory = MemoryMap(self.mu, config.MAP_ALLOC_BASE, config.MAP_ALLOC_BASE+config.MAP_ALLOC_SIZE)
 
         # Stack.
@@ -97,7 +132,7 @@ class Emulator:
         self.syscall_hooks = SyscallHooks(self.mu, self.syscall_handler)
 
         # File System
-        self.vfs = VirtualFileSystem(vfs_root, self.syscall_handler)
+        self.vfs = VirtualFileSystem(vfs_root, self.syscall_handler, self.memory)
         # Hooker
         self.memory.map(config.HOOK_MEMORY_BASE, config.HOOK_MEMORY_SIZE, UC_PROT_READ | UC_PROT_WRITE | UC_PROT_EXEC)
         self.hooker = Hooker(self, config.HOOK_MEMORY_BASE, config.HOOK_MEMORY_SIZE)
@@ -112,9 +147,7 @@ class Emulator:
         self.native_memory = NativeMemory(self.mu, self.memory, self.syscall_handler, self.vfs)
         self.native_hooks = NativeHooks(self, self.native_memory, self.modules, self.hooker, self.__vfs_root)
 
-        # Tracer
-        self.tracer = Tracer(self.mu, self.modules)
-
+        self.__add_classes()
     #
 
     def load_library(self, filename, do_init=True):
@@ -122,16 +155,17 @@ class Emulator:
         return libmod
 
     def call_symbol(self, module, symbol_name, *argv):
-        symbol = module.find_symbol(symbol_name)
+        symbol_addr = module.find_symbol(symbol_name)
 
-        if symbol is None:
+        if symbol_addr is None:
             logger.error('Unable to find symbol \'%s\' in module \'%s\'.' % (symbol_name, module.filename))
             return
 
-        return self.call_native(symbol.address, *argv)
+        return self.call_native(symbol_addr, *argv)
     #
 
     def call_native(self, addr, *argv):
+        assert addr != None, "call addr is None"
         # Detect JNI call
         is_jni = False
 
@@ -143,7 +177,7 @@ class Emulator:
         try:
             # Execute native call.
             native_write_args(self, *argv)
-            stop_pos = randint(HOOK_MEMORY_BASE, HOOK_MEMORY_BASE + HOOK_MEMORY_SIZE) | 1
+            stop_pos = randint(config.HOOK_MEMORY_BASE, config.HOOK_MEMORY_BASE + config.HOOK_MEMORY_SIZE) | 1
             self.mu.reg_write(UC_ARM_REG_LR, stop_pos)
             r = self.mu.emu_start(addr, stop_pos - 1)
             # Read result from locals if jni.
@@ -152,7 +186,7 @@ class Emulator:
                 result_idx = res
                 result = self.java_vm.jni_env.get_local_reference(result_idx)
                 if result is None:
-                    return result
+                    return JAVA_NULL
                 return result.value
             #
             else:
